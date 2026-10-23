@@ -990,6 +990,15 @@ std::string FtpServer::localPath(const FtpClient& client, const std::string& nam
     if (name.empty()) {
         return base;
     }
+    if (name[0] == '/') {
+        if (prefix.empty()) {
+            return "";
+        }
+        if (prefix.back() == '/') {
+            return prefix + name.substr(1);
+        }
+        return prefix + name;
+    }
     if (!base.empty() && base.back() != '/') {
         base += "/";
     }
