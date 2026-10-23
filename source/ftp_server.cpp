@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -979,30 +980,83 @@ std::string FtpServer::reportedCwd(const FtpClient& client) const {
     return client.virtualCwdDisplay + client.cwd.substr(1);
 }
 
-std::string FtpServer::localPath(const FtpClient& client, const std::string& name) const {
-    std::string prefix = m_rootPrefix;
+// Folds "." and ".." out of a path, clamping at its own root: a ".." with
+// nothing left to pop is dropped rather than climbing further. Always
+// returns a path starting with "/".
+//
+// This is what keeps a name the client chose inside the root it was given.
+// For sdmc: and nand: it changes nothing — there is nothing above a device
+// root to reach — but Installs' prefix is a folder, not a device, and that
+// root's whole promise is that the folder is the one writable place in it.
+// "../../../boot.dat" used to resolve straight out of it and onto the rest
+// of the card.
+static std::string foldDotSegments(const std::string& path) {
+    std::vector<std::string> parts;
+    size_t i = 0;
+    while (i < path.size()) {
+        size_t end = path.find('/', i);
+        if (end == std::string::npos) {
+            end = path.size();
+        }
+        std::string seg = path.substr(i, end - i);
+        if (seg == "..") {
+            if (!parts.empty()) {
+                parts.pop_back();
+            }
+        } else if (!seg.empty() && seg != ".") {
+            parts.push_back(seg);
+        }
+        i = end + 1;
+    }
+    std::string out;
+    for (const std::string& seg : parts) {
+        out += "/";
+        out += seg;
+    }
+    return out.empty() ? "/" : out;
+}
+
+// The real filesystem root this client's paths hang off: the active root's
+// device, or — once it has entered one — the mounted save or Ferry's own
+// Installs folder. Shared with changeDirectory(), which used to work this
+// out separately and got Installs wrong.
+std::string FtpServer::rootPrefixFor(const FtpClient& client) const {
     if (m_root == FtpRoot::Saves && client.virtualMounted) {
-        prefix = client.virtualMountName + ":";
-    } else if (m_root == FtpRoot::InstalledGames && client.installsEntered) {
-        prefix = "sdmc:/switch/Ferry/Installs";
+        return client.virtualMountName + ":";
     }
-    std::string base = prefix + client.cwd;
-    if (name.empty()) {
-        return base;
+    if (m_root == FtpRoot::InstalledGames && client.installsEntered) {
+        return "sdmc:/switch/Ferry/Installs";
     }
-    if (name[0] == '/') {
+    return m_rootPrefix;
+}
+
+std::string FtpServer::localPath(const FtpClient& client, const std::string& name) const {
+    std::string prefix = rootPrefixFor(client);
+
+    // An absolute name is resolved against the root, not against the
+    // client's current directory — WinSCP sends DELE that way, and
+    // appending it to the cwd looked for the file underneath itself.
+    std::string rel;
+    if (!name.empty() && name[0] == '/') {
         if (prefix.empty()) {
-            return "";
+            return ""; // synthetic root, nothing real to resolve against
         }
-        if (prefix.back() == '/') {
-            return prefix + name.substr(1);
+        rel = name;
+    } else {
+        rel = client.cwd;
+        if (!name.empty()) {
+            if (rel.empty() || rel.back() != '/') {
+                rel += "/";
+            }
+            rel += name;
         }
-        return prefix + name;
     }
-    if (!base.empty() && base.back() != '/') {
-        base += "/";
+
+    rel = foldDotSegments(rel);
+    if (!prefix.empty() && prefix.back() == '/') {
+        return prefix + rel.substr(1);
     }
-    return base + name;
+    return prefix + rel;
 }
 
 void FtpServer::changeDirectory(FtpClient& client, const std::string& arg) {
@@ -1172,10 +1226,20 @@ void FtpServer::changeDirectory(FtpClient& client, const std::string& arg) {
         newPath += arg + "/";
     }
 
-    std::string prefix = (m_root == FtpRoot::Saves && client.virtualMounted)
-                              ? (client.virtualMountName + ":")
-                              : m_rootPrefix;
-    std::string local = prefix + newPath;
+    // Fold here too, so cwd never carries a ".." that localPath() would
+    // later resolve differently from the directory this just checked.
+    newPath = foldDotSegments(newPath);
+    if (newPath.back() != '/') {
+        newPath += "/"; // every caller reading client.cwd expects the trailing slash
+    }
+
+    // Through localPath() rather than m_rootPrefix directly: inside
+    // Installs the real prefix is that folder, not the card's root, and
+    // stat'ing "sdmc:" + newPath there checked a completely different
+    // directory — one that could be missing when the real one exists, or
+    // exist when it doesn't.
+    std::string prefix = rootPrefixFor(client);
+    std::string local = prefix + (!prefix.empty() && prefix.back() == '/' ? newPath.substr(1) : newPath);
     struct stat st{};
     if (stat(local.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
         client.cwd = newPath;

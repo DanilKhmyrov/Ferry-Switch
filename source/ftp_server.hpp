@@ -349,6 +349,7 @@ private:
     void unmountClientVirtual(FtpClient& client);
     void logEvent(LogEntry::Kind kind, const std::string& text, long long size = 0);
     void appendToLogFile(LogEntry::Kind kind, const std::string& text, long long size);
+    std::string rootPrefixFor(const FtpClient& client) const;
     std::string localPath(const FtpClient& client, const std::string& name) const;
 
     // False only for Sd, and for Saves once this specific client has

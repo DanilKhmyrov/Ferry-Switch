@@ -14,7 +14,7 @@ ROMFS		:=	romfs
 
 APP_TITLE	:=	Ferry
 APP_AUTHOR	:=	DanilKhmyrov
-APP_VERSION	:=	1.0.2
+APP_VERSION	:=	1.0.3
 APP_ICON	:=	icon.jpg
 
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
